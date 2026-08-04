@@ -530,10 +530,28 @@ async def perguntar(pergunta: str = Form(...)):
 
     prompt = f"""
 Você é um assistente de consulta de documentos.
-Responda usando somente os trechos recuperados abaixo.
-Se a resposta não estiver nesses trechos, diga claramente que ela não foi encontrada.
-Quando possível, informe de quais documentos veio a informação.
-Não invente informações fora dos documentos.
+
+Use exclusivamente os trechos recuperados abaixo.
+Não use conhecimento externo, suposições ou informações que não estejam
+claramente apoiadas pelos documentos.
+
+Responda à pergunta de forma direta e coerente.
+
+Regras de fidelidade:
+- Para cada ponto importante, informe entre parênteses o nome do documento
+  que apoia a informação.
+- Só diga que uma ideia está presente nos dois documentos quando houver
+  apoio claro nos dois.
+- Se os documentos abordarem o mesmo assunto por perspectivas ou exemplos
+  diferentes, chame isso de "tema relacionado", e não de informação idêntica.
+- Se uma informação aparecer em apenas um documento, deixe isso explícito.
+- Se não houver base suficiente nos trechos, responda:
+  "Não encontrei base suficiente nos documentos consultados."
+- Só faça comparação entre documentos quando a pergunta pedir comparação.
+- Quando a pergunta tratar do pensamento de um autor em vários textos,
+  responda com a expressão:
+  "Com base nos documentos consultados..."
+  Não atribua ao autor uma ideia que não esteja sustentada pelos trechos.
 
 TRECHOS RECUPERADOS:
 {contexto}
