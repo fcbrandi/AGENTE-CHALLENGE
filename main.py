@@ -238,6 +238,32 @@ def extrair_texto(caminho):
 
     raise ValueError("Formato de arquivo não aceito.")
 
+def extrair_partes_referenciadas(caminho):
+    extensao = caminho.suffix.lower()
+
+    if extensao == ".pdf":
+        leitor = PdfReader(str(caminho))
+        partes = []
+
+        for numero_pagina, pagina in enumerate(leitor.pages, start=1):
+            texto = pagina.extract_text() or ""
+
+            if texto.strip():
+                partes.append(
+                    {
+                        "pagina": numero_pagina,
+                        "texto": texto,
+                    }
+                )
+
+        return partes
+
+    return [
+        {
+            "pagina": None,
+            "texto": extrair_texto(caminho),
+        }
+    ]
 
 def documentos_ativos():
     desativados = carregar_desativados()
@@ -292,7 +318,6 @@ def dividir_em_trechos(texto):
 
     return trechos
 
-
 def gerar_embeddings(textos):
     cliente = OpenAI()
     embeddings = []
@@ -307,21 +332,22 @@ def gerar_embeddings(textos):
 
     return embeddings
 
-
 def recriar_indice():
     documentos = documentos_ativos()
     registros = []
 
     for documento in documentos:
-        texto = extrair_texto(documento)
+        partes = extrair_partes_referenciadas(documento)
 
-        for trecho in dividir_em_trechos(texto):
-            registros.append(
-                {
-                    "arquivo": documento.name,
-                    "trecho": trecho,
-                }
-            )
+        for parte in partes:
+            for trecho in dividir_em_trechos(parte["texto"]):
+                registros.append(
+                    {
+                        "arquivo": documento.name,
+                        "pagina": parte["pagina"],
+                        "trecho": trecho,
+                    }
+                )
 
     if not registros:
         salvar_indice([])
@@ -336,7 +362,6 @@ def recriar_indice():
 
     salvar_indice(registros)
     return len(documentos), len(registros)
-
 
 def remover_do_indice(nome):
     indice = carregar_indice()
@@ -386,6 +411,51 @@ def buscar_trechos_relevantes(pergunta):
         key=lambda registro: registro["pontuacao"],
         reverse=True,
     )[:QUANTIDADE_TRECHOS]
+
+def referencia_do_trecho(trecho):
+    nome = trecho["arquivo"]
+    pagina = trecho.get("pagina")
+
+    if pagina:
+        return f"{nome}, página {pagina}"
+
+    return nome
+
+
+def referencias_html(trechos):
+    referencias = {}
+
+    for trecho in trechos:
+        nome = trecho["arquivo"]
+        pagina = trecho.get("pagina")
+
+        if nome not in referencias:
+            referencias[nome] = set()
+
+        if pagina:
+            referencias[nome].add(pagina)
+
+    itens = []
+
+    for nome in sorted(referencias):
+        paginas = sorted(referencias[nome])
+
+        if paginas:
+            detalhe = "Páginas consultadas: " + ", ".join(
+                str(pagina) for pagina in paginas
+            )
+        else:
+            detalhe = "Trechos consultados."
+
+        itens.append(
+            f"<li><strong>{html.escape(nome)}</strong> — "
+            f"{html.escape(detalhe)}</li>"
+        )
+
+    return (
+        "<div class='conteudo'><h2>Referências consultadas</h2>"
+        f"<ul>{''.join(itens)}</ul></div>"
+    )
 
 @app.get("/", response_class=HTMLResponse)
 def inicio():
@@ -514,15 +584,14 @@ async def perguntar(pergunta: str = Form(...)):
             resposta=(
                 "<div class='resposta'>"
                 "A biblioteca ainda não foi preparada. "
-                "Clique em “Preparar biblioteca para consulta” "
-                "depois de enviar ou alterar documentos."
+                "Clique em “Preparar biblioteca para consulta”."
                 "</div>"
             )
         )
 
     contexto = "\n\n".join(
         (
-            f"--- DOCUMENTO: {trecho['arquivo']} ---\n"
+            f"--- REFERÊNCIA: {referencia_do_trecho(trecho)} ---\n"
             f"{trecho['trecho']}"
         )
         for trecho in trechos
@@ -535,23 +604,22 @@ Use exclusivamente os trechos recuperados abaixo.
 Não use conhecimento externo, suposições ou informações que não estejam
 claramente apoiadas pelos documentos.
 
-Responda à pergunta de forma direta e coerente.
+Para cada afirmação importante, indique a referência fornecida no trecho:
+- Em PDFs, cite no formato: (nome do documento, página X).
+- Em Word ou texto simples, cite apenas o nome do documento.
+- Nunca invente uma página ou uma referência.
 
 Regras de fidelidade:
-- Para cada ponto importante, informe entre parênteses o nome do documento
-  que apoia a informação.
 - Só diga que uma ideia está presente nos dois documentos quando houver
   apoio claro nos dois.
 - Se os documentos abordarem o mesmo assunto por perspectivas ou exemplos
-  diferentes, chame isso de "tema relacionado", e não de informação idêntica.
+  diferentes, chame isso de "tema relacionado".
 - Se uma informação aparecer em apenas um documento, deixe isso explícito.
-- Se não houver base suficiente nos trechos, responda:
+- Se não houver base suficiente, responda:
   "Não encontrei base suficiente nos documentos consultados."
-- Só faça comparação entre documentos quando a pergunta pedir comparação.
-- Quando a pergunta tratar do pensamento de um autor em vários textos,
-  responda com a expressão:
+- Só faça comparação quando a pergunta pedir comparação.
+- Ao responder sobre o pensamento de um autor, use:
   "Com base nos documentos consultados..."
-  Não atribua ao autor uma ideia que não esteja sustentada pelos trechos.
 
 TRECHOS RECUPERADOS:
 {contexto}
@@ -574,14 +642,10 @@ PERGUNTA:
             "Confira a conexão e tente novamente."
         )
 
-    fontes = sorted({trecho["arquivo"] for trecho in trechos})
-    fontes_html = ", ".join(html.escape(fonte) for fonte in fontes)
-
     resposta = (
         "<div class='resposta'><h2>Resposta</h2>"
-        f"{html.escape(texto_resposta)}"
-        "<p><strong>Documentos consultados:</strong> "
-        f"{fontes_html}</p></div>"
+        f"{html.escape(texto_resposta)}</div>"
+        f"{referencias_html(trechos)}"
     )
 
     return pagina(resposta=resposta)
