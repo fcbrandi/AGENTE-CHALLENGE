@@ -1,0 +1,5 @@
+.venv/
+.env.local
+uploads/
+__pycache__/
+documentos_desativados.json
