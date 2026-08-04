@@ -231,23 +231,21 @@ def extrair_texto(caminho):
     raise ValueError("Formato de arquivo não aceito.")
 
 
-def documento_mais_recente():
+def documentos_ativos():
     desativados = carregar_desativados()
 
-    arquivos = [
-        arquivo
-        for arquivo in PASTA_UPLOADS.iterdir()
-        if (
-            arquivo.is_file()
-            and arquivo.suffix.lower() in FORMATOS_ACEITOS
-            and arquivo.name not in desativados
-        )
-    ]
-
-    if not arquivos:
-        return None
-
-    return max(arquivos, key=lambda arquivo: arquivo.stat().st_mtime)
+    return sorted(
+        [
+            arquivo
+            for arquivo in PASTA_UPLOADS.iterdir()
+            if (
+                arquivo.is_file()
+                and arquivo.suffix.lower() in FORMATOS_ACEITOS
+                and arquivo.name not in desativados
+            )
+        ],
+        key=lambda arquivo: arquivo.stat().st_mtime,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
