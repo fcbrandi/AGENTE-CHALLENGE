@@ -323,9 +323,9 @@ async def remover_documento(nome: str = Form(...)):
 
 @app.post("/perguntar", response_class=HTMLResponse)
 async def perguntar(pergunta: str = Form(...)):
-    documento = documento_mais_recente()
+    documentos = documentos_ativos()
 
-    if documento is None:
+    if not documentos:
         return pagina(
             resposta=(
                 "<div class='resposta'>"
@@ -343,28 +343,40 @@ async def perguntar(pergunta: str = Form(...)):
             )
         )
 
-    try:
-        texto_documento = extrair_texto(documento)
-    except Exception as erro:
-        print(f"Erro ao ler o documento: {erro}")
+    partes = []
+
+    for documento in documentos:
+        try:
+            texto = extrair_texto(documento)
+        except Exception as erro:
+            print(f"Erro ao ler o documento {documento.name}: {erro}")
+            continue
+
+        if texto.strip():
+            partes.append(
+                f"\n--- DOCUMENTO: {documento.name} ---\n"
+                f"{texto[:8000]}"
+            )
+
+    if not partes:
         return pagina(
             resposta=(
                 "<div class='resposta'>"
-                "Não foi possível ler o documento enviado."
+                "Não foi possível ler os documentos ativos."
                 "</div>"
             )
         )
 
+    contexto = "\n".join(partes)
+
     prompt = f"""
 Você é um assistente de consulta de documentos.
-Responda somente com base no documento abaixo.
-Se a resposta não estiver no documento, diga claramente que ela não foi encontrada.
+Considere todos os documentos abaixo para responder.
+Quando comparar informações, informe de quais documentos elas vieram.
+Se a resposta não estiver nos documentos, diga claramente que ela não foi encontrada.
 
-NOME DO DOCUMENTO:
-{documento.name}
-
-DOCUMENTO:
-{texto_documento[:12000]}
+DOCUMENTOS:
+{contexto[:24000]}
 
 PERGUNTA:
 {pergunta}
