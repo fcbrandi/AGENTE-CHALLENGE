@@ -407,6 +407,8 @@ PERGUNTA:
         )
 
     resposta = (
+        "<div class='conteudo'><h2>Pergunta</h2>"
+        f"{html.escape(pergunta)}</div>"
         "<div class='resposta'><h2>Resposta</h2>"
         f"{html.escape(texto_resposta)}</div>"
         f"{referencias_html(trechos)}"
