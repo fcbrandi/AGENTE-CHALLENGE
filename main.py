@@ -1,68 +1,31 @@
-from datetime import datetime
-from pathlib import Path
 import html
-import json
 import os
 import shutil
-import math
+from pathlib import Path
 
-from docx import Document
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse
 from openai import OpenAI
-from pypdf import PdfReader
+
+from config import FORMATOS_ACEITOS, PASTA_UPLOADS
+from documentos import (
+    carregar_desativados,
+    documentos_ativos,
+    extrair_texto,
+    listar_documentos,
+    salvar_desativados,
+)
+from indice import (
+    buscar_trechos_relevantes,
+    recriar_indice,
+    referencia_do_trecho,
+    remover_do_indice,
+)
 
 load_dotenv(".env.local")
 
 app = FastAPI()
-
-PASTA_UPLOADS = Path("uploads")
-PASTA_UPLOADS.mkdir(exist_ok=True)
-
-ARQUIVO_STATUS = Path("documentos_desativados.json")
-FORMATOS_ACEITOS = {".txt", ".docx", ".pdf"}
-ARQUIVO_INDICE = Path("indice_documentos.json")
-TAMANHO_TRECHO = 1200
-SOBREPOSICAO = 200
-QUANTIDADE_TRECHOS = 6
-
-
-def carregar_desativados():
-    if not ARQUIVO_STATUS.exists():
-        return set()
-
-    try:
-        return set(json.loads(ARQUIVO_STATUS.read_text(encoding="utf-8")))
-    except Exception:
-        return set()
-
-
-def salvar_desativados(desativados):
-    ARQUIVO_STATUS.write_text(
-        json.dumps(sorted(desativados), ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def listar_documentos():
-    desativados = carregar_desativados()
-    documentos = []
-
-    for arquivo in PASTA_UPLOADS.iterdir():
-        if arquivo.is_file() and arquivo.suffix.lower() in FORMATOS_ACEITOS:
-            documentos.append(
-                {
-                    "nome": arquivo.name,
-                    "tipo": arquivo.suffix.upper().replace(".", ""),
-                    "data": datetime.fromtimestamp(
-                        arquivo.stat().st_mtime
-                    ).strftime("%d/%m/%Y %H:%M"),
-                    "ativo": arquivo.name not in desativados,
-                }
-            )
-
-    return sorted(documentos, key=lambda documento: documento["data"], reverse=True)
 
 
 def documentos_html():
@@ -109,11 +72,47 @@ def documentos_html():
     <div class="documentos">
         <h2>Documentos enviados</h2>
         {''.join(itens)}
-                <form action="/reindexar" method="post">
+        <form action="/reindexar" method="post">
             <button type="submit">Preparar biblioteca para consulta</button>
         </form>
     </div>
     """
+
+
+def referencias_html(trechos):
+    referencias = {}
+
+    for trecho in trechos:
+        nome = trecho["arquivo"]
+        pagina = trecho.get("pagina")
+
+        if nome not in referencias:
+            referencias[nome] = set()
+
+        if pagina:
+            referencias[nome].add(pagina)
+
+    itens = []
+
+    for nome in sorted(referencias):
+        paginas = sorted(referencias[nome])
+
+        if paginas:
+            detalhe = "Páginas consultadas: " + ", ".join(
+                str(pagina) for pagina in paginas
+            )
+        else:
+            detalhe = "Trechos consultados."
+
+        itens.append(
+            f"<li><strong>{html.escape(nome)}</strong> — "
+            f"{html.escape(detalhe)}</li>"
+        )
+
+    return (
+        "<div class='conteudo'><h2>Referências consultadas</h2>"
+        f"<ul>{''.join(itens)}</ul></div>"
+    )
 
 
 def pagina(mensagem="", conteudo="", resposta=""):
@@ -216,247 +215,6 @@ def pagina(mensagem="", conteudo="", resposta=""):
     """
 
 
-def extrair_texto(caminho):
-    extensao = caminho.suffix.lower()
-
-    if extensao == ".txt":
-        return caminho.read_text(encoding="utf-8", errors="replace")
-
-    if extensao == ".docx":
-        documento = Document(str(caminho))
-        partes = [paragrafo.text for paragrafo in documento.paragraphs]
-
-        for tabela in documento.tables:
-            for linha in tabela.rows:
-                partes.append(" | ".join(celula.text for celula in linha.cells))
-
-        return "\n".join(partes)
-
-    if extensao == ".pdf":
-        leitor = PdfReader(str(caminho))
-        return "\n".join(pagina.extract_text() or "" for pagina in leitor.pages)
-
-    raise ValueError("Formato de arquivo não aceito.")
-
-def extrair_partes_referenciadas(caminho):
-    extensao = caminho.suffix.lower()
-
-    if extensao == ".pdf":
-        leitor = PdfReader(str(caminho))
-        partes = []
-
-        for numero_pagina, pagina in enumerate(leitor.pages, start=1):
-            texto = pagina.extract_text() or ""
-
-            if texto.strip():
-                partes.append(
-                    {
-                        "pagina": numero_pagina,
-                        "texto": texto,
-                    }
-                )
-
-        return partes
-
-    return [
-        {
-            "pagina": None,
-            "texto": extrair_texto(caminho),
-        }
-    ]
-
-def documentos_ativos():
-    desativados = carregar_desativados()
-
-    return sorted(
-        [
-            arquivo
-            for arquivo in PASTA_UPLOADS.iterdir()
-            if (
-                arquivo.is_file()
-                and arquivo.suffix.lower() in FORMATOS_ACEITOS
-                and arquivo.name not in desativados
-            )
-        ],
-        key=lambda arquivo: arquivo.stat().st_mtime,
-    )
-
-def carregar_indice():
-    if not ARQUIVO_INDICE.exists():
-        return []
-
-    try:
-        return json.loads(ARQUIVO_INDICE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def salvar_indice(indice):
-    ARQUIVO_INDICE.write_text(
-        json.dumps(indice, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def dividir_em_trechos(texto):
-    texto = " ".join(texto.split())
-
-    if not texto:
-        return []
-
-    trechos = []
-    passo = TAMANHO_TRECHO - SOBREPOSICAO
-
-    for inicio in range(0, len(texto), passo):
-        trecho = texto[inicio : inicio + TAMANHO_TRECHO]
-
-        if trecho:
-            trechos.append(trecho)
-
-        if inicio + TAMANHO_TRECHO >= len(texto):
-            break
-
-    return trechos
-
-def gerar_embeddings(textos):
-    cliente = OpenAI()
-    embeddings = []
-
-    for inicio in range(0, len(textos), 100):
-        lote = textos[inicio : inicio + 100]
-        resultado = cliente.embeddings.create(
-            model="text-embedding-3-small",
-            input=lote,
-        )
-        embeddings.extend(item.embedding for item in resultado.data)
-
-    return embeddings
-
-def recriar_indice():
-    documentos = documentos_ativos()
-    registros = []
-
-    for documento in documentos:
-        partes = extrair_partes_referenciadas(documento)
-
-        for parte in partes:
-            for trecho in dividir_em_trechos(parte["texto"]):
-                registros.append(
-                    {
-                        "arquivo": documento.name,
-                        "pagina": parte["pagina"],
-                        "trecho": trecho,
-                    }
-                )
-
-    if not registros:
-        salvar_indice([])
-        return 0, 0
-
-    embeddings = gerar_embeddings(
-        [registro["trecho"] for registro in registros]
-    )
-
-    for registro, embedding in zip(registros, embeddings):
-        registro["embedding"] = embedding
-
-    salvar_indice(registros)
-    return len(documentos), len(registros)
-
-def remover_do_indice(nome):
-    indice = carregar_indice()
-    indice = [
-        registro
-        for registro in indice
-        if registro.get("arquivo") != nome
-    ]
-    salvar_indice(indice)
-
-
-def similaridade(vetor_a, vetor_b):
-    produto = sum(a * b for a, b in zip(vetor_a, vetor_b))
-    norma_a = math.sqrt(sum(a * a for a in vetor_a))
-    norma_b = math.sqrt(sum(b * b for b in vetor_b))
-
-    if not norma_a or not norma_b:
-        return 0
-
-    return produto / (norma_a * norma_b)
-
-
-def buscar_trechos_relevantes(pergunta):
-    desativados = carregar_desativados()
-    indice = carregar_indice()
-
-    registros_ativos = [
-        registro
-        for registro in indice
-        if registro.get("arquivo") not in desativados
-        and (PASTA_UPLOADS / registro.get("arquivo", "")).exists()
-    ]
-
-    if not registros_ativos:
-        return []
-
-    vetor_pergunta = gerar_embeddings([pergunta])[0]
-
-    for registro in registros_ativos:
-        registro["pontuacao"] = similaridade(
-            vetor_pergunta,
-            registro["embedding"],
-        )
-
-    return sorted(
-        registros_ativos,
-        key=lambda registro: registro["pontuacao"],
-        reverse=True,
-    )[:QUANTIDADE_TRECHOS]
-
-def referencia_do_trecho(trecho):
-    nome = trecho["arquivo"]
-    pagina = trecho.get("pagina")
-
-    if pagina:
-        return f"{nome}, página {pagina}"
-
-    return nome
-
-
-def referencias_html(trechos):
-    referencias = {}
-
-    for trecho in trechos:
-        nome = trecho["arquivo"]
-        pagina = trecho.get("pagina")
-
-        if nome not in referencias:
-            referencias[nome] = set()
-
-        if pagina:
-            referencias[nome].add(pagina)
-
-    itens = []
-
-    for nome in sorted(referencias):
-        paginas = sorted(referencias[nome])
-
-        if paginas:
-            detalhe = "Páginas consultadas: " + ", ".join(
-                str(pagina) for pagina in paginas
-            )
-        else:
-            detalhe = "Trechos consultados."
-
-        itens.append(
-            f"<li><strong>{html.escape(nome)}</strong> — "
-            f"{html.escape(detalhe)}</li>"
-        )
-
-    return (
-        "<div class='conteudo'><h2>Referências consultadas</h2>"
-        f"<ul>{''.join(itens)}</ul></div>"
-    )
-
 @app.get("/", response_class=HTMLResponse)
 def inicio():
     return pagina()
@@ -481,10 +239,14 @@ async def enviar_documento(arquivo: UploadFile = File(...)):
         texto = extrair_texto(destino)
     except Exception as erro:
         print(f"Erro ao ler o documento: {erro}")
-        return pagina("O arquivo foi enviado, mas não foi possível ler o conteúdo.")
+        return pagina(
+            "O arquivo foi enviado, mas não foi possível ler o conteúdo."
+        )
 
     if not texto.strip():
-        return pagina("O arquivo foi enviado, mas não foi encontrado texto nele.")
+        return pagina(
+            "O arquivo foi enviado, mas não foi encontrado texto nele."
+        )
 
     conteudo = (
         "<div class='conteudo'><h2>Conteúdo lido</h2>"
@@ -493,12 +255,11 @@ async def enviar_documento(arquivo: UploadFile = File(...)):
 
     return pagina(f"Arquivo recebido: {html.escape(nome)}", conteudo)
 
+
 @app.post("/reindexar", response_class=HTMLResponse)
 async def reindexar_documentos():
     if not os.getenv("OPENAI_API_KEY"):
-        return pagina(
-            "A chave da OpenAI não foi encontrada na configuração."
-        )
+        return pagina("A chave da OpenAI não foi encontrada na configuração.")
 
     try:
         quantidade_documentos, quantidade_trechos = recriar_indice()
@@ -519,6 +280,7 @@ async def reindexar_documentos():
         f"{quantidade_documentos} documento(s) e "
         f"{quantidade_trechos} trecho(s)."
     )
+
 
 @app.post("/alternar", response_class=HTMLResponse)
 async def alternar_documento(nome: str = Form(...)):
@@ -552,8 +314,10 @@ async def remover_documento(nome: str = Form(...)):
     desativados = carregar_desativados()
     desativados.discard(nome)
     salvar_desativados(desativados)
+    remover_do_indice(nome)
 
     return pagina(f"Documento removido: {html.escape(nome)}")
+
 
 @app.post("/perguntar", response_class=HTMLResponse)
 async def perguntar(pergunta: str = Form(...)):
