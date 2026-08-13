@@ -28,6 +28,22 @@ load_dotenv(".env.local")
 app = FastAPI()
 
 
+ESTILOS_RESPOSTA = {
+    "clara": """
+Use uma linguagem clara, acolhedora e conversacional.
+Explique os termos mais difíceis de maneira simples.
+""",
+    "teologica": """
+Use uma linguagem teológica, com atenção a doutrina, fé e interpretação bíblica.
+Defina termos teológicos somente quando houver base nos documentos.
+""",
+    "academica": """
+Use uma linguagem acadêmica, organizada e analítica.
+Apresente distinções, limites e nuances com precisão.
+""",
+}
+
+
 def documentos_html():
     documentos = listar_documentos()
 
@@ -142,7 +158,7 @@ def pagina(mensagem="", conteudo="", resposta=""):
                 border: 2px dashed #93c5fd;
                 text-align: center;
             }}
-            input, button {{
+            input, select, button {{
                 margin: 10px;
                 padding: 12px;
                 font-size: 16px;
@@ -200,6 +216,14 @@ def pagina(mensagem="", conteudo="", resposta=""):
         <div class="caixa">
             <h2>Faça uma pergunta</h2>
             <form action="/perguntar" method="post">
+                <label for="estilo">Como você prefere a resposta?</label>
+                <br>
+                <select name="estilo" id="estilo">
+                    <option value="clara" selected>Clara e acolhedora</option>
+                    <option value="teologica">Teológica</option>
+                    <option value="academica">Acadêmica</option>
+                </select>
+                <br>
                 <input type="text" name="pergunta"
                        placeholder="Ex.: Faça um resumo do documento"
                        required>
@@ -320,35 +344,29 @@ async def remover_documento(nome: str = Form(...)):
 
 
 @app.post("/perguntar", response_class=HTMLResponse)
-async def perguntar(pergunta: str = Form(...)):
+async def perguntar(
+    pergunta: str = Form(...),
+    estilo: str = Form("clara"),
+):
     if not os.getenv("OPENAI_API_KEY"):
         return pagina(
             resposta=(
                 "<div class='resposta'>"
-                "A chave da OpenAI não foi encontrada na configuração."
+                "<h2>Configuração pendente</h2>"
+                "A chave da OpenAI não foi encontrada."
                 "</div>"
             )
         )
 
-    try:
-        trechos = buscar_trechos_relevantes(pergunta)
-    except Exception as erro:
-        print(f"Erro ao buscar trechos: {erro}")
-        return pagina(
-            resposta=(
-                "<div class='resposta'>"
-                "Não foi possível buscar nos documentos agora. "
-                "Confira a conexão e tente novamente."
-                "</div>"
-            )
-        )
+    trechos = buscar_trechos_relevantes(pergunta)
 
     if not trechos:
         return pagina(
             resposta=(
                 "<div class='resposta'>"
-                "A biblioteca ainda não foi preparada. "
-                "Clique em “Preparar biblioteca para consulta”."
+                "<h2>Sem documentos para consulta</h2>"
+                "Envie documentos ativos e clique em "
+                "<strong>Preparar biblioteca para consulta</strong>."
                 "</div>"
             )
         )
@@ -359,6 +377,11 @@ async def perguntar(pergunta: str = Form(...)):
             f"{trecho['trecho']}"
         )
         for trecho in trechos
+    )
+
+    instrucao_estilo = ESTILOS_RESPOSTA.get(
+        estilo,
+        ESTILOS_RESPOSTA["clara"],
     )
 
     prompt = f"""
@@ -374,16 +397,17 @@ Para cada afirmação importante, indique a referência fornecida no trecho:
 - Nunca invente uma página ou uma referência.
 
 Regras de fidelidade:
-- Só diga que uma ideia está presente nos dois documentos quando houver
-  apoio claro nos dois.
-- Se os documentos abordarem o mesmo assunto por perspectivas ou exemplos
-  diferentes, chame isso de "tema relacionado".
+- Só diga que uma ideia está presente nos dois documentos quando houver apoio claro nos dois.
+- Se os documentos abordarem o mesmo assunto por perspectivas ou exemplos diferentes, chame isso de "tema relacionado".
 - Se uma informação aparecer em apenas um documento, deixe isso explícito.
 - Se não houver base suficiente, responda:
   "Não encontrei base suficiente nos documentos consultados."
 - Só faça comparação quando a pergunta pedir comparação.
 - Ao responder sobre o pensamento de um autor, use:
   "Com base nos documentos consultados..."
+
+ESTILO DA RESPOSTA:
+{instrucao_estilo}
 
 TRECHOS RECUPERADOS:
 {contexto}
